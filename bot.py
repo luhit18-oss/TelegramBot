@@ -3,7 +3,7 @@ import requests
 
 # ======= EDITA ESTAS 3 COSAS =======
 TOKEN = "8280812701:AAGH4X-HoahE_jA6foiV0oo61CQrMuLd9hM"              # ej: 12345:ABC...
-BASE_URL = "https://8f5d79b2f806.ngrok-free.app"    # tu URL https ACTUAL de ngrok
+BASE_URL = "https://puremusebot.onrender.com"    # tu URL https ACTUAL 
 MP_ACCESS_TOKEN = "APP_USR-3510033415376991-101723-4123f543520272287c00983a3ca15c83-95374565"        # tu Access Token de MP
 # ====================================
 
@@ -85,4 +85,5 @@ def mp_return():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
 
