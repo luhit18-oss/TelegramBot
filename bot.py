@@ -25,7 +25,7 @@ START_FR = (
     "Laisse-toi guider par ta muse… ✨"
 )
 
-HOLA_FR = (
+HELLO_FR = (
     "🌹 *Bienvenue chez PureMuse.*\n"
     "Plonge dans un univers de beauté, d’émotions et de mystère.\n\n"
     "• /collections — Explorer les galeries\n"
@@ -116,7 +116,7 @@ def webhook():
 
     if text == "/start":
         tg_send(chat_id, START_FR)
-    elif text == "/hola":
+    elif text == "/hello":
         tg_send(chat_id, HOLA_FR)
     elif text == "/about":
         tg_send(chat_id, ABOUT_FR)
@@ -124,7 +124,7 @@ def webhook():
         tg_send(chat_id, COLLECTIONS_FR)
     elif text == "/help":
         tg_send(chat_id, HELP_FR)
-    elif text in ["/pagar", "/buy"]:
+    elif text in ["/buy"]:
         try:
             url = mp_create_preference("PureMuse VIP – 30 jours", 1, 99.0, "MXN")
             tg_send(
@@ -183,3 +183,4 @@ def mp_return():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
+
