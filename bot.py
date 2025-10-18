@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import os, time, sqlite3
 from datetime import datetime, timezone
+from typing import Optional
 import requests
 
 # ============== EDITA SOLO ESTAS 3 VARIABLES ==============
@@ -69,7 +70,7 @@ def db_init():
     """)
     con.commit(); con.close()
 
-def db_upsert_vip(chat_id: int, access_until_epoch: int, payment_id: str | None):
+def db_upsert_vip(chat_id: int, access_until_epoch: int, payment_id: Optional[str]):
     con = sqlite3.connect(DB_PATH); cur = con.cursor()
     cur.execute("""
       INSERT INTO vip_access (chat_id, access_until, last_payment_id, status)
@@ -103,7 +104,7 @@ def db_get_progress(chat_id: int):
     con.close()
     return row[0] if row else None
 
-def db_add_gallery(url: str, title: str | None):
+def db_add_gallery(url: str, title: Optional[str]):
     con = sqlite3.connect(DB_PATH); cur = con.cursor()
     cur.execute("INSERT OR IGNORE INTO galleries (url, title, active, created_at) VALUES (?, ?, 1, ?)",
                 (url, title or "", now_epoch()))
@@ -336,4 +337,3 @@ try:
     sync_galleries_from_file()
 except Exception as e:
     app.logger.error(f"Non-fatal: sync_galleries_from_file failed: {e}")
-
