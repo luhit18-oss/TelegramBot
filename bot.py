@@ -133,39 +133,50 @@ def home():
     return "OK", 200
 
 # --- Webhook Telegram ---
+# --- Webhook Telegram ---
 @app.route("/webhook", methods=["POST","GET"])
 def webhook():
     if request.method == "GET":
         return "Webhook OK", 200
+
     data = request.get_json(silent=True) or {}
     msg = data.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
     text = msg.get("text", "")
 
-if chat_id and text == "/start":
-    tg_send(chat_id, START_FR)
-elif chat_id and text == "/hola":
-    tg_send(chat_id, HOLA_FR)
-elif chat_id and text == "/about":
-    tg_send(chat_id, ABOUT_FR)
-elif chat_id and text == "/collections":
-    tg_send(chat_id, COLLECTIONS_FR)
-elif chat_id and text == "/help":
-    tg_send(chat_id, HELP_FR)
-elif chat_id and text == "/pagar":
-    try:
-        url = mp_create_preference("PureMuse VIP – 30 jours", 1, 99.0)
-        tg_send(
-            chat_id,
-            f"💎 *Accès VIP PureMuse (30 jours)*\n"
-            "Tarif: $99 MXN\n\n"
-            f"👉 [Payer maintenant]({url})\n"
-            "_Après le paiement, l’accès VIP sera activé._",
-        )
-    except Exception as e:
-        tg_send(chat_id, f"⚠️ Erreur lors de la création du lien de paiement: {e}")
+    if not chat_id or not text:
+        return "OK", 200
+
+    # --- Respuestas en francés ---
+    if text == "/start":
+        tg_send(chat_id, START_FR)
+    elif text == "/hola":
+        tg_send(chat_id, HOLA_FR)
+    elif text == "/about":
+        tg_send(chat_id, ABOUT_FR)
+    elif text == "/collections":
+        tg_send(chat_id, COLLECTIONS_FR)
+    elif text == "/help":
+        tg_send(chat_id, HELP_FR)
+    elif text in ["/pagar", "/buy"]:
+        try:
+            url = mp_create_preference("PureMuse VIP – 30 jours", 1, 99.0)
+            tg_send(
+                chat_id,
+                f"💎 *Accès VIP PureMuse (30 jours)*\n"
+                "Tarif: $99 MXN\n\n"
+                f"👉 [Payer maintenant]({url})\n"
+                "_Après le paiement, l’accès VIP sera activé._"
+            )
+        except Exception as e:
+            tg_send(chat_id, f"⚠️ Erreur lors de la création du lien de paiement: {e}")
+    elif text == "/support":
+        tg_send(chat_id, "✉️ Support: contact@puremuse.example  \nRéponse sous 24–48h.")
+    else:
+        tg_send(chat_id, "Commande non reconnue. Utilise /help pour voir les options.")
 
     return "OK", 200
+
 
 # --- Webhook Mercado Pago ---
 @app.route("/mp/webhook", methods=["POST","GET"])
@@ -190,6 +201,7 @@ def mp_return():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
 
 
 
