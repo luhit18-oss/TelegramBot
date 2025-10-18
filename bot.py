@@ -324,10 +324,16 @@ def cron_daily():
     return jsonify({"active_users": len(users), "sent": sent}), 200
 
 # -------------------- Bootstrap --------------------
-db_init()
-sync_galleries_from_file()  # lee galleries.txt y sincroniza nuevas entradas
+try:
+    db_init()
+except Exception as e:
+    # Si falla la DB sí es crítico
+    app.logger.error(f"Fatal DB init: {e}")
+    raise
 
-# Entrypoint
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+# La sync del TXT NO debe tumbar el servicio
+try:
+    sync_galleries_from_file()
+except Exception as e:
+    app.logger.error(f"Non-fatal: sync_galleries_from_file failed: {e}")
+
