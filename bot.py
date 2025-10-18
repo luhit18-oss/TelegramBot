@@ -13,6 +13,96 @@ MP_PAY_URL   = "https://api.mercadopago.com/v1/payments/"
 
 app = Flask(__name__)
 
+# ——— Textos en francés ———
+START_FR = (
+    "🌹 *PureMuse te souhaite la bienvenue.*\n"
+    "Ici, l’art rencontre la sensualité.\n\n"
+    "• /collections — Explorer les galeries\n"
+    "• /about — Philosophie PureMuse\n"
+    "• /buy — Accès VIP 30 jours\n"
+    "• /help — Aide\n\n"
+    "Laisse-toi guider par ta muse… ✨"
+)
+
+HOLA_FR = (
+    "🌹 *Bienvenue chez PureMuse.*\n"
+    "Plonge dans un univers de beauté, d’émotions et de mystère.\n\n"
+    "• /collections — Explorer les galeries\n"
+    "• /about — Philosophie PureMuse\n"
+    "• /buy — Accès VIP 30 jours\n"
+    "• /support — Contact\n"
+    "💫 Ta muse t’attend."
+)
+
+ABOUT_FR = (
+    "*PureMuse* est une galerie numérique où l’art et la sensualité s’unissent.\n"
+    "Collections photographiques exclusives, esthétique élégante et désir suggéré.\n"
+    "Découvre, ressens, collectionne."
+)
+
+COLLECTIONS_FR = (
+    "🖼️ *Collections PureMuse*\n"
+    "• Édition Noir & Or\n"
+    "• Voiles & Silhouettes\n"
+    "• Lumière d’Ambre\n"
+    "_(Démo)_"
+)
+
+HELP_FR = (
+    "Commandes disponibles:\n"
+    "/start, /hola, /about, /collections, /buy, /support, /help"
+)
+
+def reply(chat_id, text):
+    requests.post(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    )
+
+# ——— Dentro de tu webhook ———
+if text.startswith("/start"):
+    reply(chat_id, START_FR)
+    return jsonify({"ok": True})
+
+if text.startswith("/hola"):
+    reply(chat_id, HOLA_FR)
+    return jsonify({"ok": True})
+
+if text.startswith("/about"):
+    reply(chat_id, ABOUT_FR)
+    return jsonify({"ok": True})
+
+if text.startswith("/collections"):
+    reply(chat_id, COLLECTIONS_FR)
+    return jsonify({"ok": True})
+
+# Alias español y/o inglés para pagar
+if text.startswith("/pagar") or text.startswith("/buy"):
+    try:
+        init_point, sandbox = mp_create_preference(
+            title="PureMuse VIP – 30 jours",
+            qty=1,
+            unit_price=99.0,
+            currency_id="MXN"
+        )
+        reply(chat_id,
+              "💎 *Accès VIP PureMuse (30 jours)*\n"
+              "Tarif: $99 MXN\n\n"
+              f"👉 [Payer maintenant]({init_point})\n"
+              "_Après le paiement, l’accès VIP sera activé._")
+    except Exception as e:
+        app.logger.error(f"/buy error: {e}")
+        reply(chat_id, "⚠️ Erreur lors de la création du lien de paiement. Réessaie dans un moment.")
+    return jsonify({"ok": True})
+
+if text.startswith("/support"):
+    reply(chat_id, "✉️ Support: contact@puremuse.example  \nRéponse sous 24–48h.")
+    return jsonify({"ok": True})
+
+if text.startswith("/help"):
+    reply(chat_id, HELP_FR)
+    return jsonify({"ok": True})
+
 def tg_send(chat_id, text):
     requests.post(SEND_URL, json={"chat_id": chat_id, "text": text})
 
@@ -85,5 +175,6 @@ def mp_return():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
 
 
