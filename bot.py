@@ -5,19 +5,19 @@ from typing import Optional
 import requests
 
 # ============== EDITA SOLO ESTAS 3 VARIABLES ==============
-TOKEN = "8280812701:AAGH4X-HoahE_jA6foiV0oo61CQrMuLd9hM"                           # p.ej. 12345:ABCDEF...
-BASE_URL = "https://puremusebot.onrender.com"        # URL pública de Render (https)
-MP_ACCESS_TOKEN = "APP_USR-3510033415376991-101723-4123f543520272287c00983a3ca15c83-95374565"                # Access Token de Mercado Pago (test/prod)
+TOKEN = "8280812701:AAGH4X-HoahE_jA6foiV0oo61CQrMuLd9hM"
+BASE_URL = "https://puremusebot.onrender.com"
+MP_ACCESS_TOKEN = "APP_USR-3510033415376991-101723-4123f543520272287c00983a3ca15c83-95374565"
 # =========================================================
 
 # ---- VIP window & DB ----
 VIP_DURATION_SECONDS = 30 * 24 * 3600  # 30 días en segundos
-DB_PATH = "/mnt/data/puremuse.sqlite3" # Persistencia básica en Render (para producción grande: Postgres)
+DB_PATH = "/mnt/data/puremuse.sqlite3"  # Persistencia básica en Render
 
 # ---- Endpoints externos ----
-SEND_URL     = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+SEND_URL = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 MP_PREFS_URL = "https://api.mercadopago.com/checkout/preferences"
-MP_PAY_URL   = "https://api.mercadopago.com/v1/payments/"
+MP_PAY_URL = "https://api.mercadopago.com/v1/payments/"
 
 app = Flask(__name__)
 
@@ -35,14 +35,16 @@ def tg_send(chat_id: int, text: str, reply_markup=None):
         app.logger.error(f"tg_send error: {e}")
 
 def seconds_to_dhm(secs: int):
-    d = secs // 86400; h = (secs % 86400) // 3600; m = (secs % 3600) // 60
+    d = secs // 86400
+    h = (secs % 86400) // 3600
+    m = (secs % 3600) // 60
     return d, h, m
 
 # -------------------- DB --------------------
 def db_init():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    con = sqlite3.connect(DB_PATH); cur = con.cursor()
-    # Accesos VIP
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
     cur.execute("""
     CREATE TABLE IF NOT EXISTS vip_access (
         chat_id INTEGER PRIMARY KEY,
@@ -51,7 +53,6 @@ def db_init():
         status TEXT NOT NULL
     );
     """)
-    # Galerías (ordenadas)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS galleries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,17 +62,18 @@ def db_init():
         created_at INTEGER NOT NULL
     );
     """)
-    # Progreso por usuario (última galería enviada)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS vip_progress (
         chat_id INTEGER PRIMARY KEY,
         last_gallery_id INTEGER
     );
     """)
-    con.commit(); con.close()
+    con.commit()
+    con.close()
 
 def db_upsert_vip(chat_id: int, access_until_epoch: int, payment_id: Optional[str]):
-    con = sqlite3.connect(DB_PATH); cur = con.cursor()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
     cur.execute("""
       INSERT INTO vip_access (chat_id, access_until, last_payment_id, status)
       VALUES (?, ?, ?, 'active')
@@ -80,56 +82,66 @@ def db_upsert_vip(chat_id: int, access_until_epoch: int, payment_id: Optional[st
         last_payment_id=excluded.last_payment_id,
         status='active';
     """, (chat_id, access_until_epoch, payment_id or ""))
-    con.commit(); con.close()
+    con.commit()
+    con.close()
 
 def db_get_vip(chat_id: int):
-    con = sqlite3.connect(DB_PATH); cur = con.cursor()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
     cur.execute("SELECT access_until, status FROM vip_access WHERE chat_id=?", (chat_id,))
     row = cur.fetchone()
     con.close()
-    return row  # (access_until, status) o None
+    return row
 
 def db_set_progress(chat_id: int, last_gallery_id: int):
-    con = sqlite3.connect(DB_PATH); cur = con.cursor()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
     cur.execute("""
-      INSERT INTO vip_progress (chat_id, last_gallery_id) VALUES (?, ?)
+      INSERT INTO vip_progress (chat_id, last_gallery_id)
+      VALUES (?, ?)
       ON CONFLICT(chat_id) DO UPDATE SET last_gallery_id=excluded.last_gallery_id;
     """, (chat_id, last_gallery_id))
-    con.commit(); con.close()
+    con.commit()
+    con.close()
 
 def db_get_progress(chat_id: int):
-    con = sqlite3.connect(DB_PATH); cur = con.cursor()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
     cur.execute("SELECT last_gallery_id FROM vip_progress WHERE chat_id=?", (chat_id,))
     row = cur.fetchone()
     con.close()
     return row[0] if row else None
 
 def db_add_gallery(url: str, title: Optional[str]):
-    con = sqlite3.connect(DB_PATH); cur = con.cursor()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
     cur.execute("INSERT OR IGNORE INTO galleries (url, title, active, created_at) VALUES (?, ?, 1, ?)",
                 (url, title or "", now_epoch()))
-    con.commit(); con.close()
+    con.commit()
+    con.close()
 
 def db_list_galleries():
-    con = sqlite3.connect(DB_PATH); cur = con.cursor()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
     cur.execute("SELECT id, url, title, active FROM galleries ORDER BY id ASC")
-    rows = cur.fetchall(); con.close()
+    rows = cur.fetchall()
+    con.close()
     return rows
 
 def db_next_gallery_for(chat_id: int):
-    """Siguiente galería ACTIVA que el usuario no recibió aún (por id asc)."""
     last_id = db_get_progress(chat_id)
-    con = sqlite3.connect(DB_PATH); cur = con.cursor()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
     if last_id is None:
         cur.execute("SELECT id, url, title FROM galleries WHERE active=1 ORDER BY id ASC LIMIT 1")
     else:
         cur.execute("SELECT id, url, title FROM galleries WHERE active=1 AND id > ? ORDER BY id ASC LIMIT 1", (last_id,))
-    row = cur.fetchone(); con.close()
-    return row  # (id, url, title) o None
+    row = cur.fetchone()
+    con.close()
+    return row
 
-# -------------------- Sincronizar desde galleries.txt --------------------
+# -------------------- Sync galleries.txt --------------------
 def sync_galleries_from_file(file_path="galleries.txt"):
-    """Lee galleries.txt y agrega nuevas galerías a la DB (no duplica)."""
     try:
         if not os.path.exists(file_path):
             app.logger.warning("No se encontró galleries.txt")
@@ -169,7 +181,7 @@ def mp_create_preference_for_user(chat_id: int, title="PureMuse VIP – 30 days"
             "pending": f"{BASE_URL}/mp/return?status=pending",
         },
         "notification_url": f"{BASE_URL}/mp/webhook",
-        "external_reference": str(chat_id)  # clave: mapea pago -> usuario
+        "external_reference": str(chat_id)
     }
     r = requests.post(MP_PREFS_URL, json=body, headers=headers, timeout=30)
     r.raise_for_status()
@@ -182,24 +194,23 @@ def mp_get_payment(payment_id: str):
     return r.json() if r.status_code == 200 else None
 
 # -------------------- Textos --------------------
-WELCOME = ("🌹 *Welcome to PureMuse.*\nWhere art meets sensuality.\n\nChoose one of the options below 👇")
-ABOUT   = ("*PureMuse* is a digital gallery where art and sensuality merge.\nExclusive photographic collections, elegant aesthetics, and the beauty of desire.")
-COLLECT = ("🖼️ *PureMuse Collections*\n• Noir & Gold Edition\n• Veils & Silhouettes\n• Amber Light\n_(Demo)_")
-HELP    = ("Available commands:\n/start, /about, /collections, /pay, /content, /vip, /renew, /support, /help")
-PAID_OK = ("✅ Payment received. VIP access is *active for 30 days*.\nUse `/content` to get today’s gallery, or `/vip` to check your status.")
+WELCOME = "🌹 *Welcome to PureMuse.*\nWhere art meets sensuality.\n\nChoose one of the options below 👇"
+ABOUT = "*PureMuse* is a digital gallery where art and sensuality merge.\nExclusive photographic collections, elegant aesthetics, and the beauty of desire."
+COLLECT = "🖼️ *PureMuse Collections*\n• Noir & Gold Edition\n• Veils & Silhouettes\n• Amber Light\n_(Demo)_"
+HELP = "Available commands:\n/start, /about, /collections, /pay, /content, /vip, /renew, /support, /help"
+PAID_OK = "✅ Payment received. VIP access is *active for 30 days*.\nUse `/content` to get today’s gallery, or `/vip` to check your status."
 
-# -------------------- Rutas públicas --------------------
+# -------------------- Rutas --------------------
 @app.route("/", methods=["GET"])
 def home():
-    return "PureMuse Bot is up ✨ DriveTXT v1", 200
+    return "PureMuse Bot is up ✨ DriveTXT v2", 200
 
-# Telegram Webhook
 @app.route("/webhook", methods=["POST", "GET"])
 def webhook():
     if request.method == "GET":
         return "Webhook OK", 200
     data = request.get_json(silent=True) or {}
-    msg  = data.get("message") or data.get("edited_message") or {}
+    msg = data.get("message") or data.get("edited_message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
     text = (msg.get("text") or "").strip().lower()
     if not chat_id or not text:
@@ -216,16 +227,12 @@ def webhook():
             "one_time_keyboard": False
         }
         tg_send(chat_id, WELCOME, reply_markup=keyboard)
-
     elif text.startswith("/about"):
         tg_send(chat_id, ABOUT)
-
     elif text.startswith("/collections"):
         tg_send(chat_id, COLLECT)
-
     elif text.startswith("/help"):
         tg_send(chat_id, HELP)
-
     elif text.startswith("/vip"):
         rec = db_get_vip(chat_id)
         if not rec:
@@ -234,11 +241,10 @@ def webhook():
             access_until, status = rec
             remaining = access_until - now_epoch()
             if remaining > 0 and status == "active":
-                d,h,m = seconds_to_dhm(remaining)
+                d, h, m = seconds_to_dhm(remaining)
                 tg_send(chat_id, f"✅ VIP active. Remaining: *{d}d {h}h {m}m*.")
             else:
                 tg_send(chat_id, "⛔ VIP expired. Use /renew to reactivate.")
-
     elif text.startswith("/content"):
         rec = db_get_vip(chat_id)
         if not rec:
@@ -256,30 +262,25 @@ def webhook():
                     title_txt = f"*{title}*\n" if title else ""
                     tg_send(chat_id, f"🍷 *Premium Gallery*\n{title_txt}{url}")
                     db_set_progress(chat_id, gid)
-
     elif text.startswith("/renew"):
         try:
-            pay_url = mp_create_preference_for_user(chat_id, "PureMuse VIP – 30 days", 1, 99.0, "MXN")
+            pay_url = mp_create_preference_for_user(chat_id)
             tg_send(chat_id, f"💳 *Renew VIP (30 days)*\n👉 [Pay now]({pay_url})")
         except Exception as e:
             tg_send(chat_id, f"⚠️ Payment error: {e}")
-
     elif text.startswith("/pay") or text.startswith("/buy"):
         try:
-            pay_url = mp_create_preference_for_user(chat_id, "PureMuse VIP – 30 days", 1, 99.0, "MXN")
+            pay_url = mp_create_preference_for_user(chat_id)
             tg_send(chat_id, f"💎 *VIP Access (30 days)*\nPrice: $99 MXN\n👉 [Pay now]({pay_url})")
         except Exception as e:
             tg_send(chat_id, f"⚠️ Error creating payment link: {e}")
-
     elif text.startswith("/support"):
         tg_send(chat_id, "✉️ Support: contact@puremuse.example\nReplies within 24–48 hours.")
-
     else:
         tg_send(chat_id, "Unknown command. Use /help to see options.")
 
     return "OK", 200
 
-# Mercado Pago Webhook
 @app.route("/mp/webhook", methods=["POST", "GET"])
 def mp_webhook():
     if request.method == "GET":
@@ -290,10 +291,12 @@ def mp_webhook():
     if topic == "payment" and payment_id:
         pay = mp_get_payment(payment_id)
         if pay:
-            status  = pay.get("status")
+            status = pay.get("status")
             ext_ref = pay.get("external_reference")
-            try: chat_id = int(ext_ref) if ext_ref else None
-            except: chat_id = None
+            try:
+                chat_id = int(ext_ref) if ext_ref else None
+            except:
+                chat_id = None
             app.logger.info(f"[MP] Payment {payment_id} -> {status} (chat_id={chat_id})")
             if status == "approved" and chat_id:
                 access_until = now_epoch() + VIP_DURATION_SECONDS
@@ -301,12 +304,11 @@ def mp_webhook():
                 tg_send(chat_id, PAID_OK)
     return jsonify({"status": "received"}), 200
 
-# -------------------- CRON diario: enviar “siguiente galería” --------------------
 @app.route("/cron/daily", methods=["GET", "POST"])
 def cron_daily():
-    # Nota: para proteger este endpoint, puedes añadir un token más adelante.
     now_e = now_epoch()
-    con = sqlite3.connect(DB_PATH); cur = con.cursor()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
     cur.execute("SELECT chat_id, access_until, status FROM vip_access WHERE access_until > ? AND status = 'active'", (now_e,))
     users = cur.fetchall()
     con.close()
@@ -315,7 +317,7 @@ def cron_daily():
     for chat_id, access_until, status in users:
         nxt = db_next_gallery_for(chat_id)
         if not nxt:
-            continue  # ya recibió todas las disponibles
+            continue
         gid, url, title = nxt
         title_txt = f"*{title}*\n" if title else ""
         tg_send(chat_id, f"🌙 *Daily VIP drop*\n{title_txt}{url}")
@@ -328,11 +330,9 @@ def cron_daily():
 try:
     db_init()
 except Exception as e:
-    # Si falla la DB sí es crítico
     app.logger.error(f"Fatal DB init: {e}")
     raise
 
-# La sync del TXT NO debe tumbar el servicio
 try:
     sync_galleries_from_file()
 except Exception as e:
