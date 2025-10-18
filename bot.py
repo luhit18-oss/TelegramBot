@@ -142,14 +142,29 @@ def webhook():
     chat_id = (msg.get("chat") or {}).get("id")
     text = msg.get("text", "")
 
-    if chat_id and text == "/start":
-        tg_send(chat_id, "✅ Bot activo.\nEnvía /pagar para link de pago.")
-    elif chat_id and text == "/pagar":
-        try:
-            url = mp_create_preference("Compra de prueba", 1, 99.0)
-            tg_send(chat_id, f"💳 Paga aquí:\n{url}")
-        except Exception as e:
-            tg_send(chat_id, f"⚠️ Error creando pago: {e}")
+if chat_id and text == "/start":
+    tg_send(chat_id, START_FR)
+elif chat_id and text == "/hola":
+    tg_send(chat_id, HOLA_FR)
+elif chat_id and text == "/about":
+    tg_send(chat_id, ABOUT_FR)
+elif chat_id and text == "/collections":
+    tg_send(chat_id, COLLECTIONS_FR)
+elif chat_id and text == "/help":
+    tg_send(chat_id, HELP_FR)
+elif chat_id and text == "/pagar":
+    try:
+        url = mp_create_preference("PureMuse VIP – 30 jours", 1, 99.0)
+        tg_send(
+            chat_id,
+            f"💎 *Accès VIP PureMuse (30 jours)*\n"
+            "Tarif: $99 MXN\n\n"
+            f"👉 [Payer maintenant]({url})\n"
+            "_Après le paiement, l’accès VIP sera activé._",
+        )
+    except Exception as e:
+        tg_send(chat_id, f"⚠️ Erreur lors de la création du lien de paiement: {e}")
+
     return "OK", 200
 
 # --- Webhook Mercado Pago ---
@@ -175,6 +190,7 @@ def mp_return():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
 
 
 
