@@ -1,355 +1,330 @@
-# bot.py
-from flask import Flask, request, jsonify
 import os
-from datetime import datetime, timezone
-from typing import Optional, List, Tuple
+import json
+import random
+from datetime import date, datetime, timedelta
+
+from flask import Flask, request, jsonify
 import requests
 
-from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Text
-from sqlalchemy.orm import DeclarativeBase, sessionmaker, Mapped, mapped_column
+# === ENV ===
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
+BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
+MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "")
+MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET", "secret")
 
-# ========= ENV VARS (no edites aquí; configúralas en Render) =========
-TOKEN = os.environ["TOKEN"]                    # ej: 12345:ABC...
-BASE_URL = os.environ["BASE_URL"]              # ej: https://puremusebot.onrender.com
-MP_ACCESS_TOKEN = os.environ["MP_ACCESS_TOKEN"]# Token de Mercado Pago
-DATABASE_URL = os.environ["DATABASE_URL"]      # postgresql+psycopg://.../db?sslmode=require
-CRON_TOKEN = os.environ.get("CRON_TOKEN", "")  # para proteger /cron/daily
-# =====================================================================
-
-VIP_DURATION_SECONDS = 30 * 24 * 3600  # 30 días
-
-SEND_URL     = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+SET_WEBHOOK_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
 MP_PREFS_URL = "https://api.mercadopago.com/checkout/preferences"
-MP_PAY_URL   = "https://api.mercadopago.com/v1/payments/"
+MP_PAY_URL = "https://api.mercadopago.com/v1/payments/"
 
-# ---------- SQLAlchemy ----------
-class Base(DeclarativeBase):
-    pass
+# === DB (SQLAlchemy 2.x) ===
+from sqlalchemy import create_engine, BigInteger, Date, Integer, String, func, select
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-class VipAccess(Base):
-    __tablename__ = "vip_access"
-    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    access_until: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    last_payment_id: Mapped[Optional[str]] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
-
-class Gallery(Base):
-    __tablename__ = "galleries"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    url: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    title: Mapped[Optional[str]] = mapped_column(Text)
-    active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
-
-class VipProgress(Base):
-    __tablename__ = "vip_progress"
-    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    last_gallery_id: Mapped[Optional[int]] = mapped_column(Integer)
-
+DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=5,
+    pool_recycle=300,
+    echo=False,
+    future=True,
 )
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+Base = declarative_base()
 
-def init_db():
-    Base.metadata.create_all(engine)
+class VIPUser(Base):
+    __tablename__ = "vip_users"
+    id = Integer().with_variant(Integer, "postgresql")
+    id = Integer(primary_key=True, autoincrement=True)
+    chat_id = BigInteger()
+    username = String(150)
+    start_date = Date()         # fecha de inicio VIP
+    progress_day = Integer()    # día actual (0-29)
+    # UNIQUE opcional según tu estrategia, aquí dejamos chat_id repetible por seguridad
 
-# ---------- Utils ----------
-def now_epoch() -> int:
-    return int(datetime.now(timezone.utc).timestamp())
-
-def tg_send(chat_id: int, text: str, reply_markup=None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    try:
-        requests.post(SEND_URL, json=payload, timeout=15)
-    except Exception as e:
-        app.logger.error(f"tg_send error: {e}")
-
-def seconds_to_dhm(secs: int) -> Tuple[int, int, int]:
-    d = secs // 86400
-    h = (secs % 86400) // 3600
-    m = (secs % 3600) // 60
-    return d, h, m
-
-# ---------- DB ops ----------
-def db_upsert_vip(chat_id: int, access_until_epoch: int, payment_id: Optional[str]):
-    with SessionLocal() as s:
-        obj = s.get(VipAccess, chat_id)
-        if obj:
-            obj.access_until = access_until_epoch
-            if payment_id:
-                obj.last_payment_id = payment_id
-            obj.status = "active"
-        else:
-            s.add(VipAccess(
-                chat_id=chat_id,
-                access_until=access_until_epoch,
-                last_payment_id=payment_id or "",
-                status="active",
-            ))
-        s.commit()
-
-def db_get_vip(chat_id: int):
-    with SessionLocal() as s:
-        obj = s.get(VipAccess, chat_id)
-        if not obj:
-            return None
-        return (obj.access_until, obj.status)
-
-def db_set_progress(chat_id: int, last_gallery_id: int):
-    with SessionLocal() as s:
-        obj = s.get(VipProgress, chat_id)
-        if obj:
-            obj.last_gallery_id = last_gallery_id
-        else:
-            s.add(VipProgress(chat_id=chat_id, last_gallery_id=last_gallery_id))
-        s.commit()
-
-def db_get_progress(chat_id: int):
-    with SessionLocal() as s:
-        obj = s.get(VipProgress, chat_id)
-        return obj.last_gallery_id if obj else None
-
-def db_add_gallery(url: str, title: Optional[str]):
-    with SessionLocal() as s:
-        exists = s.query(Gallery).filter(Gallery.url == url).first()
-        if exists:
-            return
-        s.add(Gallery(url=url, title=title or "", active=1, created_at=now_epoch()))
-        s.commit()
-
-def db_list_galleries():
-    with SessionLocal() as s:
-        return s.query(Gallery.id, Gallery.url, Gallery.title, Gallery.active)\
-                .order_by(Gallery.id.asc()).all()
-
-def db_next_gallery_for(chat_id: int):
-    last_id = db_get_progress(chat_id)
-    with SessionLocal() as s:
-        q = s.query(Gallery.id, Gallery.url, Gallery.title).filter(Gallery.active == 1)
-        if last_id is None:
-            row = q.order_by(Gallery.id.asc()).first()
-        else:
-            row = q.filter(Gallery.id > last_id).order_by(Gallery.id.asc()).first()
-        return (row.id, row.url, row.title) if row else None
-
-# ---------- Sincronizar galleries.txt ----------
-def sync_galleries_from_file(file_path="galleries.txt"):
-    try:
-        if not os.path.exists(file_path):
-            app.logger.warning("galleries.txt no encontrado; continuando.")
-            return
-        added = 0
-        with open(file_path, "r", encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split("|")
-                if len(parts) == 2:
-                    title, url = parts[0].strip(), parts[1].strip()
-                else:
-                    title, url = "", parts[0].strip()
-                if url.startswith("http"):
-                    db_add_gallery(url, title)
-                    added += 1
-        app.logger.info(f"✅ Sincronizadas {added} entradas desde galleries.txt")
-    except Exception as e:
-        app.logger.error(f"sync_galleries_from_file error: {e}")
-
-# ---------- Mercado Pago ----------
-def mp_create_preference_for_user(chat_id: int, title="PureMuse VIP – 30 days", qty=1, unit_price=99.0, currency_id="MXN") -> str:
-    headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}", "Content-Type": "application/json"}
-    body = {
-        "items": [{
-            "title": title,
-            "quantity": int(qty),
-            "unit_price": float(unit_price),
-            "currency_id": currency_id
-        }],
-        "auto_return": "approved",
-        "back_urls": {
-            "success": f"{BASE_URL}/mp/return?status=success",
-            "failure": f"{BASE_URL}/mp/return?status=failure",
-            "pending": f"{BASE_URL}/mp/return?status=pending",
-        },
-        "notification_url": f"{BASE_URL}/mp/webhook",
-        "external_reference": str(chat_id)
-    }
-    r = requests.post(MP_PREFS_URL, json=body, headers=headers, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    return data.get("init_point") or data.get("sandbox_init_point")
-
-def mp_get_payment(payment_id: str):
-    headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
-    r = requests.get(MP_PAY_URL + str(payment_id), headers=headers, timeout=30)
-    return r.json() if r.status_code == 200 else None
-
-# ---------- Textos ----------
-WELCOME = "🌹 *Welcome to PureMuse.*\nWhere art meets sensuality.\n\nChoose one of the options below 👇"
-ABOUT   = "*PureMuse* is a digital gallery where art and sensuality merge.\nExclusive photographic collections, elegant aesthetics, and the beauty of desire."
-COLLECT = "🖼️ *PureMuse Collections*\n• Noir & Gold Edition\n• Veils & Silhouettes\n• Amber Light\n_(Demo)_"
-HELP    = "Available commands:\n/start, /about, /collections, /pay, /content, /vip, /renew, /support, /help"
-PAID_OK = "✅ Payment received. VIP access is *active for 30 days*.\nUse `/content` to get today’s gallery, or `/vip` to check your status."
-
-# ---------- Flask ----------
+# === APP ===
 app = Flask(__name__)
 
+# === UTIL ===
+def tg_send(chat_id: int, text: str, parse_mode: str | None = None):
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    try:
+        requests.post(SEND_URL, json=payload, timeout=15)
+    except Exception:
+        pass
+
+def read_galleries() -> list[str]:
+    """
+    Lee galleries.txt (una URL por línea). Devuelve lista de 30 elementos.
+    Si hay menos, se rellena con las últimas; si hay más, se usan las primeras 30.
+    """
+    path = os.path.join(os.getcwd(), "galleries.txt")
+    links = []
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            links = [ln.strip() for ln in f.readlines() if ln.strip()]
+    if not links:
+        # fallback de seguridad
+        links = [f"https://example.com/gallery/{i+1}" for i in range(30)]
+    # normalizamos a 30
+    if len(links) < 30:
+        while len(links) < 30:
+            links.append(links[-1])
+    elif len(links) > 30:
+        links = links[:30]
+    return links
+
+GALLERIES = read_galleries()
+
+def is_active_vip(start: date, today: date | None = None) -> bool:
+    if not today:
+        today = date.today()
+    return (today - start).days < 30
+
+def ensure_tables():
+    Base.metadata.create_all(bind=engine)
+
+def get_or_create_vip(chat_id: int, username: str | None = None) -> VIPUser:
+    with SessionLocal() as db:
+        u = db.execute(
+            select(VIPUser).where(VIPUser.chat_id == chat_id)
+        ).scalar_one_or_none()
+        if u:
+            if username and (not u.username):
+                u.username = username
+                db.commit()
+            return u
+        u = VIPUser(chat_id=chat_id, username=username or "", start_date=date.today(), progress_day=0)
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        return u
+
+def set_vip_start_or_refresh(chat_id: int, username: str | None = None):
+    """
+    Si ya era VIP, reinicia a día 0 desde hoy. Si no existía, lo crea.
+    """
+    with SessionLocal() as db:
+        u = db.execute(
+            select(VIPUser).where(VIPUser.chat_id == chat_id)
+        ).scalar_one_or_none()
+        if u:
+            u.start_date = date.today()
+            u.progress_day = 0
+            if username and not u.username:
+                u.username = username
+            db.commit()
+            return u
+        u = VIPUser(chat_id=chat_id, username=username or "", start_date=date.today(), progress_day=0)
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        return u
+
+def send_gallery_today(vip: VIPUser):
+    """
+    Envía la galería correspondiente al progress_day del usuario.
+    No incrementa; el incremento se hace aparte para controlar reintentos.
+    """
+    day = max(0, min(vip.progress_day, 29))
+    link = GALLERIES[day]
+    msg = f"🎁 *PureMuse VIP – Día {day+1}/30*\n\nTu galería de hoy:\n{link}\n\n¡Disfrútala!"
+    tg_send(vip.chat_id, msg, parse_mode="Markdown")
+
+def increment_progress(vip: VIPUser):
+    with SessionLocal() as db:
+        u = db.execute(
+            select(VIPUser).where(VIPUser.id == vip.id)
+        ).scalar_one()
+        u.progress_day = min(29, (u.progress_day or 0) + 1)
+        db.commit()
+
+def mp_create_link(chat_id: int) -> str:
+    """
+    Crea el link de pago con external_reference = chat_id
+    """
+    headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}", "Content-Type": "application/json"}
+    # Ajusta los datos del item y precios a tu oferta
+    data = {
+        "items": [
+            {
+                "title": "PureMuse VIP – 30 días",
+                "quantity": 1,
+                "unit_price": 99.0,
+                "currency_id": "MXN"
+            }
+        ],
+        "external_reference": str(chat_id),
+        "notification_url": f"{BASE_URL}/mp/webhook?secret={MP_WEBHOOK_SECRET}",
+        "back_urls": {
+            "success": f"{BASE_URL}/paid?status=success",
+            "pending": f"{BASE_URL}/paid?status=pending",
+            "failure": f"{BASE_URL}/paid?status=failure"
+        },
+        "auto_return": "approved"
+    }
+    r = requests.post(MP_PREFS_URL, headers=headers, json=data, timeout=20)
+    r.raise_for_status()
+    payload = r.json()
+    # init_point (web) o sandbox_init_point (sandbox). En prod es init_point.
+    return payload.get("init_point") or payload.get("sandbox_init_point")
+
+def mp_fetch_payment(payment_id: str) -> dict | None:
+    headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
+    url = MP_PAY_URL + payment_id
+    r = requests.get(url, headers=headers, timeout=20)
+    if r.status_code == 200:
+        return r.json()
+    return None
+
+# === ROUTES ===
 @app.route("/", methods=["GET"])
-def home():
-    return "PureMuse Bot is up ✨ Stage 5 (Neon/Postgres)", 200
+def root():
+    return jsonify({"ok": True, "service": "PureMuse Bot"}), 200
 
-@app.route("/healthz", methods=["GET"])
-def health():
-    return jsonify({"ok": True}), 200
+@app.route("/set_webhook", methods=["GET"])
+def set_webhook():
+    if not BASE_URL:
+        return jsonify({"ok": False, "error": "Set BASE_URL env var"}), 400
+    url = f"{BASE_URL}/telegram"
+    r = requests.get(SET_WEBHOOK_URL, params={"url": url}, timeout=15)
+    try:
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        return jsonify({"ok": False, "raw": r.text}), r.status_code
 
-# Webhook Telegram
-@app.route("/webhook", methods=["POST","GET"])
-def webhook():
-    if request.method == "GET":
-        return "Webhook OK", 200
+@app.route("/telegram", methods=["POST"])
+def telegram_webhook():
     data = request.get_json(silent=True) or {}
-    msg  = data.get("message") or data.get("edited_message") or {}
-    chat_id = (msg.get("chat") or {}).get("id")
-    text = (msg.get("text") or "").strip().lower()
-    if not chat_id or not text:
-        return "OK", 200
+    message = data.get("message") or data.get("edited_message")
+    if not message:
+        return jsonify({"ok": True})
 
+    chat = message.get("chat", {})
+    chat_id = chat.get("id")
+    text = (message.get("text") or "").strip()
+    username = message.get("from", {}).get("username")
+
+    if not text:
+        return jsonify({"ok": True})
+
+    # Comandos
     if text.startswith("/start"):
-        keyboard = {
-            "keyboard": [
-                [{"text": "/about"}, {"text": "/collections"}],
-                [{"text": "/pay"}, {"text": "/content"}],
-                [{"text": "/vip"}, {"text": "/support"}]
-            ],
-            "resize_keyboard": True,
-            "one_time_keyboard": False
-        }
-        tg_send(chat_id, WELCOME, reply_markup=keyboard)
+        # Ofrecer link de pago + explicar VIP
+        pay_link = mp_create_link(chat_id)
+        tg_send(chat_id,
+                "💎 *PureMuse VIP*\n\nAcceso a 30 galerías exclusivas (1 por día).\n\n"
+                f"Precio: $99 MXN\n\nPaga aquí:\n{pay_link}",
+                parse_mode="Markdown")
+        return jsonify({"ok": True})
 
-    elif text.startswith("/about"):
-        tg_send(chat_id, ABOUT)
+    if text.startswith("/testdb"):
+        # Crea tablas si no existen
+        ensure_tables()
+        tg_send(chat_id, "✅ DB lista (tablas creadas/verificadas).")
+        return jsonify({"ok": True})
 
-    elif text.startswith("/collections"):
-        tg_send(chat_id, COLLECT)
-
-    elif text.startswith("/help"):
-        tg_send(chat_id, HELP)
-
-    elif text.startswith("/vip"):
-        rec = db_get_vip(chat_id)
-        if not rec:
-            tg_send(chat_id, "❌ No active VIP access. Use /pay or /renew.")
-        else:
-            access_until, status = rec
-            remaining = access_until - now_epoch()
-            if remaining > 0 and status == "active":
-                d, h, m = seconds_to_dhm(remaining)
-                tg_send(chat_id, f"✅ VIP active. Remaining: *{d}d {h}h {m}m*.")
+    if text.startswith("/vipstatus"):
+        with SessionLocal() as db:
+            u = db.execute(select(VIPUser).where(VIPUser.chat_id == chat_id)).scalar_one_or_none()
+            if not u:
+                tg_send(chat_id, "❌ No tienes VIP activo. Usa /start para obtener acceso.")
             else:
-                tg_send(chat_id, "⛔ VIP expired. Use /renew to reactivate.")
+                active = is_active_vip(u.start_date)
+                dias = 30 - (date.today() - u.start_date).days
+                dias = max(0, dias)
+                tg_send(chat_id, f"👤 VIP: {'ACTIVO' if active else 'VENCIDO'}\n"
+                                 f"Inicio: {u.start_date}\n"
+                                 f"Día actual: {u.progress_day+1}/30\n"
+                                 f"Días restantes: {dias}")
+        return jsonify({"ok": True})
 
-    elif text.startswith("/content"):
-        rec = db_get_vip(chat_id)
-        if not rec:
-            tg_send(chat_id, "❌ No VIP access. Use /pay to subscribe.")
-        else:
-            access_until, status = rec
-            if (access_until - now_epoch()) <= 0 or status != "active":
-                tg_send(chat_id, "⛔ Access expired. Use /renew to continue.")
-            else:
-                nxt = db_next_gallery_for(chat_id)
-                if not nxt:
-                    tg_send(chat_id, "🎉 You already received all available galleries. Come back tomorrow!")
-                else:
-                    gid, url, title = nxt
-                    title_txt = f"*{title}*\n" if title else ""
-                    tg_send(chat_id, f"🍷 *Premium Gallery*\n{title_txt}{url}")
-                    db_set_progress(chat_id, gid)
+    if text.startswith("/sendtoday"):
+        if chat_id != ADMIN_CHAT_ID:
+            tg_send(chat_id, "⛔ Solo admin.")
+            return jsonify({"ok": True})
+        # Fuerza el envío del día de hoy para todos los VIP activos (sin incrementar)
+        with SessionLocal() as db:
+            rows = db.execute(select(VIPUser)).scalars().all()
+            sent = 0
+            for u in rows:
+                if is_active_vip(u.start_date):
+                    send_gallery_today(u)
+                    sent += 1
+        tg_send(chat_id, f"📨 Envío manual de hoy realizado a {sent} VIP(s).")
+        return jsonify({"ok": True})
 
-    elif text.startswith("/renew"):
-        try:
-            pay_url = mp_create_preference_for_user(chat_id)
-            tg_send(chat_id, f"💳 *Renew VIP (30 days)*\n👉 [Pay now]({pay_url})")
-        except Exception as e:
-            tg_send(chat_id, f"⚠️ Payment error: {e}")
+    # fallback
+    tg_send(chat_id, "Comandos disponibles:\n/start – Comprar VIP\n/vipstatus – Estado VIP\n/testdb – Verificar DB\n/sendtoday – (admin)")
+    return jsonify({"ok": True})
 
-    elif text.startswith("/pay") or text.startswith("/buy"):
-        try:
-            pay_url = mp_create_preference_for_user(chat_id)
-            tg_send(chat_id, f"💎 *VIP Access (30 days)*\nPrice: $99 MXN\n👉 [Pay now]({pay_url})")
-        except Exception as e:
-            tg_send(chat_id, f"⚠️ Error creating payment link: {e}")
-
-    elif text.startswith("/support"):
-        tg_send(chat_id, "✉️ Support: contact@puremuse.example\nReplies within 24–48 hours.")
-
-    else:
-        tg_send(chat_id, "Unknown command. Use /help to see options.")
-    return "OK", 200
-
-# Webhook Mercado Pago (activa VIP)
-@app.route("/mp/webhook", methods=["POST","GET"])
+@app.route("/mp/webhook", methods=["POST", "GET"])
 def mp_webhook():
-    if request.method == "GET":
-        return "MP Webhook OK", 200
-    body = request.get_json(silent=True) or {}
-    topic = body.get("type") or body.get("topic")
-    payment_id = (body.get("data") or {}).get("id")
-    if topic == "payment" and payment_id:
-        pay = mp_get_payment(payment_id)
-        if pay:
-            status  = pay.get("status")
-            ext_ref = pay.get("external_reference")
+    """
+    Mercado Pago envía notificaciones con ?type=payment & data.id=PAYMENT_ID
+    Validamos "?secret=" para evitar ruidos.
+    """
+    secret = request.args.get("secret")
+    if secret != MP_WEBHOOK_SECRET:
+        return jsonify({"ok": False, "error": "bad secret"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    # MP manda varias formas; contemplamos las comunes:
+    type_ = request.args.get("type") or payload.get("type")
+    data_id = request.args.get("data.id") or (payload.get("data", {}) or {}).get("id")
+
+    if type_ == "payment" and data_id:
+        info = mp_fetch_payment(str(data_id))
+        if info and info.get("status") == "approved":
+            # Recuperamos chat_id desde external_reference
+            ext = info.get("external_reference")
             try:
-                chat_id = int(ext_ref) if ext_ref else None
+                chat_id = int(ext)
             except Exception:
                 chat_id = None
-            app.logger.info(f"[MP] Payment {payment_id} -> {status} (chat_id={chat_id})")
-            if status == "approved" and chat_id:
-                access_until = now_epoch() + VIP_DURATION_SECONDS
-                db_upsert_vip(chat_id, access_until, str(payment_id))
-                tg_send(chat_id, PAID_OK)
-    return jsonify({"status": "received"}), 200
+            payer_username = None
+            # Si quieres, aquí puedes intentar extraer email/nombre.
+            if chat_id:
+                ensure_tables()
+                u = set_vip_start_or_refresh(chat_id, payer_username)
+                tg_send(chat_id, "✅ *Pago aprobado.* VIP activado por 30 días.\n\nTu primera galería llega en breve.",
+                        parse_mode="Markdown")
+                # Enviar primera galería
+                send_gallery_today(u)
+                increment_progress(u)
+        return jsonify({"ok": True})
 
-# Cron diario: envía la próxima galería a todos los VIP activos
-@app.route("/cron/daily", methods=["GET","POST"])
+    # Otras notificaciones las ignoramos
+    return jsonify({"ok": True})
+
+@app.route("/cron/daily", methods=["GET"])
 def cron_daily():
-    # Protegido con token ?key=...
-    given = request.args.get("key", "")
-    if CRON_TOKEN and given != CRON_TOKEN:
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-
-    now_e = now_epoch()
+    """
+    Endpoint para CRON DIARIO (Render).
+    Envío 1 galería y avanzo progress_day.
+    Idempotente por día si tu CRON corre 1 vez/día.
+    """
+    ensure_tables()
+    today = date.today()
     sent = 0
-    users: List[int] = []
+    with SessionLocal() as db:
+        users = db.execute(select(VIPUser)).scalars().all()
+        for u in users:
+            if is_active_vip(u.start_date, today):
+                # Enviar galería del día actual de su progreso
+                send_gallery_today(u)
+                increment_progress(u)
+                sent += 1
+    return jsonify({"ok": True, "sent": sent, "date": str(today)}), 200
 
-    with SessionLocal() as s:
-        rows = s.query(VipAccess.chat_id, VipAccess.access_until, VipAccess.status)\
-                .filter(VipAccess.access_until > now_e, VipAccess.status == "active").all()
-        users = [r[0] for r in rows]
+@app.route("/paid", methods=["GET"])
+def paid_landing():
+    status = request.args.get("status", "unknown")
+    return f"Pago: {status}. Puedes cerrar esta pestaña y volver a Telegram.", 200
 
-    for chat_id in users:
-        nxt = db_next_gallery_for(chat_id)
-        if not nxt:
-            continue
-        gid, url, title = nxt
-        title_txt = f"*{title}*\n" if title else ""
-        tg_send(chat_id, f"🌙 *Daily VIP drop*\n{title_txt}{url}")
-        db_set_progress(chat_id, gid)
-        sent += 1
-
-    return jsonify({"active_users": len(users), "sent": sent}), 200
-
-# ---------- Bootstrap ----------
-def startup():
-    init_db()                # crea tablas si no existen
-    sync_galleries_from_file()
-
-startup()
+# === STARTUP: crear tablas al iniciar en Render ===
+with app.app_context():
+    ensure_tables()
