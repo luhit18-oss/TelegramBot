@@ -3,9 +3,9 @@ import os
 import requests
 
 # ========= EDITA SOLO ESTAS 3 VARIABLES =========
-TOKEN = "YOUR_TELEGRAM_TOKEN"                      # ej: 12345:ABCDEF...
-BASE_URL = "https://your-subdomain.onrender.com"   # URL pública de Render (https)
-MP_ACCESS_TOKEN = "YOUR_MP_ACCESS_TOKEN"           # Access Token de Mercado Pago
+TOKEN = "8280812701:AAGH4X-HoahE_jA6foiV0oo61CQrMuLd9hM"                      # ej: 12345:ABCDEF...
+BASE_URL = "https://puremusebot.onrender.com"   # URL pública de Render (https)
+MP_ACCESS_TOKEN = "APP_USR-3510033415376991-101723-4123f543520272287c00983a3ca15c83-95374565"           # Access Token de Mercado Pago
 # ===============================================
 
 SEND_URL = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -137,3 +137,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
+
