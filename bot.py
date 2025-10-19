@@ -99,10 +99,25 @@ def read_galleries() -> list[str]:
         return [ln.strip() for ln in f if ln.strip()]
 
 def is_active(u: VIPUser) -> bool:
-    return now_mx() < u.active_until
+    """Devuelve True si el usuario sigue activo."""
+    try:
+        now = now_mx().replace(tzinfo=None)  # ← Forzamos a naive
+        if not u.active_until:
+            return False
+        return now < u.active_until
+    except Exception:
+        return False
 
 def days_left(u: VIPUser) -> int:
-    return max(0, (u.active_until - now_mx()).days)
+    """Devuelve cuántos días le quedan al usuario VIP."""
+    try:
+        now = now_mx().replace(tzinfo=None)
+        if not u.active_until:
+            return 0
+        delta = u.active_until - now
+        return max(0, delta.days)
+    except Exception:
+        return 0
 
 def build_keyboard() -> dict:
     return {
@@ -286,3 +301,4 @@ def telegram_webhook():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
+
