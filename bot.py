@@ -296,6 +296,7 @@ def telegram_webhook():
         err = traceback.format_exc()
         notify_owner(f"🔥 Telegram handler crashed:\n<pre>{esc(err)}</pre>")
         return jsonify(ok=True)
+        
 # ======= ADMIN ENDPOINTS (safe) =======
 @app.get("/admin/delete_user")
 def admin_delete_user():
@@ -305,30 +306,32 @@ def admin_delete_user():
     if not chat_id:
         return jsonify(ok=False, error="missing chat_id"), 400
 
-    ensure_tables()
+    ensure_schema_safe()
     try:
         with SessionLocal() as db:
-            del1 = db.query(VIPDelivery).filter(VIPDelivery.chat_id == chat_id).delete(synchronize_session=False)
-            del2 = db.query(VIPUser).filter(VIPUser.chat_id == chat_id).delete(synchronize_session=False)
+            # Borrar entregas primero (si existen)
+            d1 = db.execute(delete(VIPDelivery).where(VIPDelivery.chat_id == chat_id)).rowcount
+            d2 = db.execute(delete(VIPUser).where(VIPUser.chat_id == chat_id)).rowcount
             db.commit()
-        return jsonify(ok=True, deleted=del1 + del2), 200
+        return jsonify(ok=True, deleted=(d1 or 0) + (d2 or 0)), 200
     except Exception as e:
-        import traceback
-        traceback.print_exc()  # 👈 esto mostrará el error en los logs Render
+        import traceback; traceback.print_exc()
         return jsonify(ok=False, error=str(e)), 500
+
 
 @app.get("/admin/clear_all")
 def admin_clear_all():
     if request.args.get("secret") != CRON_TOKEN:
         return "forbidden", 403
-    ensure_tables()
+    ensure_schema_safe()
     try:
         with SessionLocal() as db:
-            d1 = db.query(VIPDelivery).delete(synchronize_session=False)
-            d2 = db.query(VIPUser).delete(synchronize_session=False)
+            d1 = db.execute(delete(VIPDelivery)).rowcount
+            d2 = db.execute(delete(VIPUser)).rowcount
             db.commit()
-        return jsonify(ok=True, cleared_users=d2, cleared_deliveries=d1), 200
+        return jsonify(ok=True, cleared_users=(d2 or 0), cleared_deliveries=(d1 or 0)), 200
     except Exception as e:
+        import traceback; traceback.print_exc()
         return jsonify(ok=False, error=str(e)), 500
 
 
@@ -336,21 +339,19 @@ def admin_clear_all():
 def admin_db_status():
     if request.args.get("secret") != CRON_TOKEN:
         return "forbidden", 403
-    ensure_tables()
+    ensure_schema_safe()
     try:
         with SessionLocal() as db:
-            users = db.query(VIPUser).count()
-            deliveries = db.query(VIPDelivery).count()
+            users = db.execute(select(func.count(VIPUser.id))).scalar_one()
+            deliveries = db.execute(select(func.count(VIPDelivery.id))).scalar_one()
             last_backup = db.execute(select(func.max(VIPDelivery.sent_at))).scalar_one_or_none()
         return jsonify(ok=True, users=users, deliveries=deliveries, last_backup=str(last_backup)), 200
     except Exception as e:
+        import traceback; traceback.print_exc()
         return jsonify(ok=False, error=str(e)), 500
+
 
 # ========= MAIN =========
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
