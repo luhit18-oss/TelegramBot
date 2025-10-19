@@ -159,33 +159,70 @@ def set_webhook():
     except Exception:
         return jsonify({"ok": False, "raw": r.text}), r.status_code
 
+# ---- COMANDOS OFICIALES DEL BOT (para que Telegram muestre los botones correctos) ----
+@app.get("/set_commands")
+def set_commands():
+    """
+    Define la lista oficial de comandos del bot (setMyCommands).
+    Esto es lo que Telegram enseña como botones con '/'.
+    """
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setMyCommands"
+    commands = {
+        "commands": [
+            {"command": "about",     "description": "Sobre PureMuse"},
+            {"command": "galleries", "description": "Cómo funcionan las galerías"},
+            {"command": "buyvip",    "description": "Comprar VIP ($50 MXN)"},
+            {"command": "vipstatus", "description": "Estado de tu VIP"},
+        ]
+    }
+    r = requests.post(url, json=commands, timeout=15)
+    return (r.text, r.status_code, {"Content-Type": "application/json"})
+
+@app.get("/get_commands")
+def get_commands():
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMyCommands"
+    r = requests.get(url, timeout=15)
+    return (r.text, r.status_code, {"Content-Type": "application/json"})
+
+# ---- DEBUG opcional (puedes dejarlos o quitarlos) ----
+@app.get("/debug/ping")
+def debug_ping():
+    chat_id = request.args.get("chat_id", type=int)
+    if not chat_id:
+        return "Falta ?chat_id=TU_CHAT_ID", 400
+    tg_send_text(chat_id, "pong 🏓 (debug)")
+    return "ok", 200
+
+@app.get("/debug/buttons")
+def debug_buttons():
+    return jsonify(build_main_menu()), 200
+
+# ---- Webhook de Telegram ----
 @app.post("/telegram")
 def telegram_webhook():
     data = request.get_json(silent=True) or {}
 
-    # a) Callback_query (si más adelante usas botones inline)
+    # a) callback_query (no usado ahora; reservado por si luego agregas inline buttons)
     if data.get("callback_query"):
         return jsonify({"ok": True})
 
-    # b) Mensajes / Comandos
+    # b) mensajes / comandos
     message = data.get("message") or data.get("edited_message")
     if not message:
         return jsonify({"ok": True})
 
     chat_id = (message.get("chat") or {}).get("id")
     text = (message.get("text") or "").strip()
-    username = (message.get("from") or {}).get("username")
-
-    if not text:
+    if not text or not chat_id:
         return jsonify({"ok": True})
 
-    # Normalizamos comandos (acepta con o sin slash)
-    t = text.upper().strip()
+    # Normaliza a MAYÚSCULAS y quita '/' si viene como comando
+    t = text.upper()
     if t.startswith("/"):
         t = t[1:]
 
-    # ====== COMANDO: START (bienvenida + menú) ======
-    if t in ("START",):
+    # ===== /start =====
+    if t == "START":
         welcome = (
             "✨ *Bienvenido a PureMuse Bot*\n\n"
             "Explora nuestras galerías y suscríbete al plan VIP para recibir *1 enlace diario* durante *30 días*."
@@ -193,26 +230,30 @@ def telegram_webhook():
         tg_send_text(chat_id, welcome, parse_mode="Markdown", reply_markup=build_main_menu())
         return jsonify({"ok": True})
 
-    # ====== COMANDO: ABOUT ======
-    if t in ("ABOUT",):
-        tg_send_text(chat_id,
-            "👋 *ABOUT*\n\nPureMuse ofrece galerías artísticas exclusivas.\n"
+    # ===== /about =====
+    if t == "ABOUT":
+        tg_send_text(
+            chat_id,
+            "👋 *ABOUT*\n\nPureMuse ofrece galerías artísticas exclusivas. "
             "Con VIP recibes un enlace diario por 30 días.\n\nUsa *BUY VIP* para suscribirte.",
             parse_mode="Markdown",
-            reply_markup=build_main_menu())
+            reply_markup=build_main_menu(),
+        )
         return jsonify({"ok": True})
 
-    # ====== COMANDO: GALLERIES ======
-    if t in ("GALLERIES",):
-        tg_send_text(chat_id,
+    # ===== /galleries =====
+    if t == "GALLERIES":
+        tg_send_text(
+            chat_id,
             "🖼️ *GALLERIES*\n\nLas galerías VIP se envían *1 por día* durante *30 días*.\n"
             "Los enlaces se hospedan en Google Drive.\n\nCompra con *BUY VIP*.",
             parse_mode="Markdown",
-            reply_markup=build_main_menu())
+            reply_markup=build_main_menu(),
+        )
         return jsonify({"ok": True})
 
-    # ====== COMANDO: BUY VIP (link MP $50 MXN) ======
-    if t in ("BUY VIP","BUY_VIP","BUYVIP"):
+    # ===== /buyvip =====
+    if t in ("BUYVIP", "BUY VIP", "BUY_VIP"):
         try:
             link = mp_create_link(chat_id)
             msg = (
@@ -221,109 +262,38 @@ def telegram_webhook():
                 "Al aprobarse, activamos tu VIP y enviamos la *Galería Día 1* automáticamente."
             )
             tg_send_text(chat_id, msg, parse_mode="Markdown", reply_markup=build_main_menu())
-        except Exception as e:
+        except Exception:
             tg_send_text(chat_id, "⚠️ No pude generar el link de pago. Intenta de nuevo en unos minutos.")
         return jsonify({"ok": True})
 
-    # ====== COMANDO: VIP STATUS ======
-    if t in ("VIP STATUS","VIP_STATUS","VIPSTATUS"):
+    # ===== /vipstatus =====
+    if t in ("VIPSTATUS", "VIP STATUS", "VIP_STATUS"):
         ensure_tables()
         with SessionLocal() as db:
             u = db.execute(select(VIPUser).where(VIPUser.chat_id == chat_id)).scalar_one_or_none()
             if not u:
-                tg_send_text(chat_id,
+                tg_send_text(
+                    chat_id,
                     "❌ No tienes VIP activo. Usa *BUY VIP* para suscribirte.",
                     parse_mode="Markdown",
-                    reply_markup=build_main_menu())
+                    reply_markup=build_main_menu(),
+                )
             else:
                 active = is_active_vip(u.start_date)
                 dias_rest = max(0, 30 - (date.today() - u.start_date).days)
-                tg_send_text(chat_id,
+                tg_send_text(
+                    chat_id,
                     f"👤 *VIP STATUS*\n\nEstado: {'ACTIVO ✅' if active else 'VENCIDO ❌'}\n"
                     f"Inicio: {u.start_date}\n"
                     f"Día actual: {u.progress_day+1}/30\n"
                     f"Días restantes: {dias_rest}\n\n"
                     f"{'¡Sigue atento a tu galería diaria!' if active else 'Renueva con BUY VIP.'}",
                     parse_mode="Markdown",
-                    reply_markup=build_main_menu())
+                    reply_markup=build_main_menu(),
+                )
         return jsonify({"ok": True})
 
     # Fallback: re-muestra menú
     tg_send_text(chat_id, "Usa el menú para navegar.", reply_markup=build_main_menu())
     return jsonify({"ok": True})
 
-@app.route("/mp/webhook", methods=["POST", "GET"])
-def mp_webhook():
-    """
-    Mercado Pago envía notificaciones con ?type=payment & data.id=PAYMENT_ID.
-    Activamos VIP y enviamos Día 1 al aprobarse.
-    """
-    secret = request.args.get("secret")
-    if secret != MP_WEBHOOK_SECRET:
-        return jsonify({"ok": False, "error": "bad secret"}), 403
-
-    payload = request.get_json(silent=True) or {}
-    type_ = request.args.get("type") or payload.get("type")
-    data_id = request.args.get("data.id") or (payload.get("data", {}) or {}).get("id")
-
-    if type_ == "payment" and data_id:
-        info = mp_fetch_payment(str(data_id))
-        if info and info.get("status") == "approved":
-            ext = info.get("external_reference")  # guardamos chat_id aquí
-            try:
-                chat_id = int(ext)
-            except Exception:
-                chat_id = None
-
-            if chat_id:
-                ensure_tables()
-                with SessionLocal() as db:
-                    u = db.execute(select(VIPUser).where(VIPUser.chat_id == chat_id)).scalar_one_or_none()
-                    if u:
-                        # renovar ciclo: reinicia día 0 desde hoy
-                        u.start_date = date.today()
-                        u.progress_day = 0
-                        db.commit()
-                    else:
-                        u = VIPUser(chat_id=chat_id, username=None, start_date=date.today(), progress_day=0)
-                        db.add(u); db.commit(); db.refresh(u)
-
-                # Enviar día 1 y avanzar a 1
-                send_gallery_today(chat_id, 0)
-                with SessionLocal() as db:
-                    u = db.execute(select(VIPUser).where(VIPUser.chat_id == chat_id)).scalar_one()
-                    u.progress_day = 1
-                    db.commit()
-
-    return jsonify({"ok": True})
-
-@app.get("/cron/daily")
-def cron_daily():
-    """
-    Llamar 1 vez al día (Render → Jobs).
-    Envía 1 galería y avanza progress_day a todos los VIP activos.
-    Tras 30 días (progress_day llega a 30), ya no avanza más y el usuario debe comprar de nuevo.
-    """
-    ensure_tables()
-    sent = 0
-    today = date.today()
-    with SessionLocal() as db:
-        users = db.execute(select(VIPUser)).scalars().all()
-        for u in users:
-            if is_active_vip(u.start_date, today):
-                # Enviar galería del día actual
-                send_gallery_today(u.chat_id, u.progress_day)
-                # Avanzar (máx 29 → día 30)
-                u.progress_day = min(29, (u.progress_day or 0) + 1)
-                db.commit()
-                sent += 1
-    return jsonify({"ok": True, "sent": sent, "date": str(today)}), 200
-
-@app.get("/paid")
-def paid_landing():
-    status = request.args.get("status", "unknown")
-    return f"Pago: {status}. Puedes cerrar esta pestaña y volver a Telegram.", 200
-
-# Crear tablas al arrancar
-with app.app_context():
-    ensure_tables()
