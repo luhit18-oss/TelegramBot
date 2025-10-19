@@ -79,6 +79,9 @@ def is_active_vip(start: date, today: date | None = None) -> bool:
     return (today - start).days < 30
 
 def tg_send_text(chat_id: int, text: str, parse_mode: str | None = None, reply_markup: dict | None = None):
+    """
+    Envía texto a Telegram y adjunta (opcionalmente) un teclado.
+    """
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
@@ -88,13 +91,21 @@ def tg_send_text(chat_id: int, text: str, parse_mode: str | None = None, reply_m
 
 def build_main_menu() -> dict:
     """
-    Menú principal como ReplyKeyboard (cada botón es un comando visible).
+    Menú principal como ReplyKeyboard (cada botón ES un comando con slash).
+    Esto hace que Telegram muestre exactamente:
+    /about · /galleries · /buyvip · /vipstatus
+    sin necesidad de configurar BotFather.
     """
     keyboard = [
-        [{"text": "ABOUT"}, {"text": "GALLERIES"}],
-        [{"text": "BUY VIP"}, {"text": "VIP STATUS"}],
+        [{"text": "/about"},     {"text": "/galleries"}],
+        [{"text": "/buyvip"},    {"text": "/vipstatus"}],
     ]
-    return {"keyboard": keyboard, "resize_keyboard": True, "one_time_keyboard": False}
+    return {
+        "keyboard": keyboard,
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "input_field_placeholder": "Elige una opción…"
+    }
 
 def mp_create_link(chat_id: int) -> str:
     """
@@ -132,6 +143,7 @@ def send_gallery_today(chat_id: int, progress_day: int):
     msg = f"🎁 *PureMuse VIP – Día {day+1}/30*\n\nTu galería de hoy:\n{link}\n\n¡Disfrútala!"
     tg_send_text(chat_id, msg, parse_mode="Markdown")
 
+
 # ============ SECCIÓN 1D: FLASK APP Y RUTAS ============
 app = Flask(__name__)
 
@@ -159,46 +171,22 @@ def set_webhook():
     except Exception:
         return jsonify({"ok": False, "raw": r.text}), r.status_code
 
-# ---- COMANDOS OFICIALES DEL BOT (setMyCommands) ----
-@app.get("/set_commands")
-def set_commands():
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setMyCommands"
-    commands = {
-        "commands": [
-            {"command": "about",     "description": "Sobre PureMuse"},
-            {"command": "galleries", "description": "Cómo funcionan las galerías"},
-            {"command": "buyvip",    "description": "Comprar VIP ($50 MXN)"},
-            {"command": "vipstatus", "description": "Estado de tu VIP"},
-        ]
-    }
-    r = requests.post(url, json=commands, timeout=15)
-    return (r.text, r.status_code, {"Content-Type": "application/json"})
-
-@app.get("/get_commands")
-def get_commands():
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMyCommands"
-    r = requests.get(url, timeout=15)
-    return (r.text, r.status_code, {"Content-Type": "application/json"})
-
-# ---- DEBUG opcional ----
-@app.get("/debug/ping")
-def debug_ping():
+# (Opcional) endpoint para forzar el envío del menú a un chat concreto
+@app.get("/force_menu")
+def force_menu():
     chat_id = request.args.get("chat_id", type=int)
     if not chat_id:
-        return "Falta ?chat_id=TU_CHAT_ID", 400
-    tg_send_text(chat_id, "pong 🏓 (debug)")
+        return "Usa ?chat_id=TU_CHAT_ID", 400
+    tg_send_text(chat_id,
+                 "Menú actualizado. Elige una opción:",
+                 reply_markup=build_main_menu())
     return "ok", 200
 
-@app.get("/debug/buttons")
-def debug_buttons():
-    return jsonify(build_main_menu()), 200
-
-# ---- Webhook de Telegram ----
 @app.post("/telegram")
 def telegram_webhook():
     data = request.get_json(silent=True) or {}
 
-    # a) callback_query (reservado por si usas inline buttons más adelante)
+    # a) callback_query (reservado para futuro; no usamos inline por ahora)
     if data.get("callback_query"):
         return jsonify({"ok": True})
 
@@ -212,57 +200,59 @@ def telegram_webhook():
     if not text or not chat_id:
         return jsonify({"ok": True})
 
-    # Normaliza y quita '/'
+    # normaliza y quita '/'
     t = text.upper().strip()
     if t.startswith("/"):
         t = t[1:]
 
-    # /start
-    if t == "START":
+    # ===== /start y /menu → bienvenida + TECLADO CON SLASHES =====
+    if t in ("START", "MENU"):
         welcome = (
             "✨ *Bienvenido a PureMuse Bot*\n\n"
-            "Explora nuestras galerías y suscríbete al plan VIP para recibir *1 enlace diario* durante *30 días*."
+            "Usa los botones para navegar.\n"
+            "Con VIP recibirás 1 enlace diario por 30 días."
         )
         tg_send_text(chat_id, welcome, parse_mode="Markdown", reply_markup=build_main_menu())
         return jsonify({"ok": True})
 
-    # /about
+    # ===== /about =====
     if t == "ABOUT":
         tg_send_text(
             chat_id,
             "👋 *ABOUT*\n\nPureMuse ofrece galerías artísticas exclusivas. "
-            "Con VIP recibes un enlace diario por 30 días.\n\nUsa *BUY VIP* para suscribirte.",
+            "Con VIP recibes un enlace diario por 30 días.\n\nUsa /buyvip para suscribirte.",
             parse_mode="Markdown",
             reply_markup=build_main_menu(),
         )
         return jsonify({"ok": True})
 
-    # /galleries
+    # ===== /galleries =====
     if t == "GALLERIES":
         tg_send_text(
             chat_id,
-            "🖼️ *GALLERIES*\n\nLas galerías VIP se envían *1 por día* durante *30 días*.\n"
-            "Los enlaces se hospedan en Google Drive.\n\nCompra con *BUY VIP*.",
+            "🖼️ *GALLERIES*\n\nLas galerías VIP se envían 1 por día durante 30 días.\n"
+            "Los enlaces están en Google Drive.\n\nCompra con /buyvip.",
             parse_mode="Markdown",
             reply_markup=build_main_menu(),
         )
         return jsonify({"ok": True})
 
-    # /buyvip
+    # ===== /buyvip =====
     if t in ("BUYVIP", "BUY VIP", "BUY_VIP"):
         try:
             link = mp_create_link(chat_id)
             msg = (
-                "💳 *BUY VIP*\n\nSuscripción de *30 días* por *$50 MXN*.\n\n"
+                "💳 *BUY VIP*\n\nSuscripción de 30 días por *$50 MXN*.\n\n"
                 f"Completa tu pago aquí:\n{link}\n\n"
                 "Al aprobarse, activamos tu VIP y enviamos la *Galería Día 1* automáticamente."
             )
             tg_send_text(chat_id, msg, parse_mode="Markdown", reply_markup=build_main_menu())
         except Exception:
-            tg_send_text(chat_id, "⚠️ No pude generar el link de pago. Intenta de nuevo en unos minutos.")
+            tg_send_text(chat_id, "⚠️ No pude generar el link de pago. Intenta de nuevo en unos minutos.",
+                         reply_markup=build_main_menu())
         return jsonify({"ok": True})
 
-    # /vipstatus
+    # ===== /vipstatus =====
     if t in ("VIPSTATUS", "VIP STATUS", "VIP_STATUS"):
         ensure_tables()
         with SessionLocal() as db:
@@ -270,7 +260,7 @@ def telegram_webhook():
             if not u:
                 tg_send_text(
                     chat_id,
-                    "❌ No tienes VIP activo. Usa *BUY VIP* para suscribirte.",
+                    "❌ No tienes VIP activo. Usa /buyvip para suscribirte.",
                     parse_mode="Markdown",
                     reply_markup=build_main_menu(),
                 )
@@ -283,14 +273,18 @@ def telegram_webhook():
                     f"Inicio: {u.start_date}\n"
                     f"Día actual: {u.progress_day+1}/30\n"
                     f"Días restantes: {dias_rest}\n\n"
-                    f"{'¡Sigue atento a tu galería diaria!' if active else 'Renueva con BUY VIP.'}",
+                    f"{'¡Sigue atento a tu galería diaria!' if active else 'Renueva con /buyvip.'}",
                     parse_mode="Markdown",
                     reply_markup=build_main_menu(),
                 )
         return jsonify({"ok": True})
 
-    # Fallback: re-muestra menú
+    # Fallback → volver a mostrar teclado con slashes
+    tg_send_text(chat_id, "Elige una opción:", reply_markup=build_main_menu())
+    return jsonify({"ok": True})
+
     tg_send_text(chat_id, "Usa el menú para navegar.", reply_markup=build_main_menu())
     return jsonify({"ok": True})
+
 
 
