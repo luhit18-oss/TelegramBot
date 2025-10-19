@@ -8,7 +8,6 @@
 #  🔒 DB auto-repair and persistence
 #  💬 Owner alerts for any DB or API issue
 # =========================================================
-
 import os
 import html
 import hashlib
@@ -19,9 +18,10 @@ from typing import Optional, Iterable
 
 import requests
 from flask import Flask, request, jsonify
+
 from sqlalchemy import (
     create_engine, BigInteger, Integer, String, Date, DateTime,
-    select, UniqueConstraint, func, text
+    UniqueConstraint, text, delete, select, func
 )
 from sqlalchemy.orm import sessionmaker, DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.exc import ProgrammingError, OperationalError
@@ -355,3 +355,4 @@ def admin_db_status():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
+
