@@ -159,13 +159,9 @@ def set_webhook():
     except Exception:
         return jsonify({"ok": False, "raw": r.text}), r.status_code
 
-# ---- COMANDOS OFICIALES DEL BOT (para que Telegram muestre los botones correctos) ----
+# ---- COMANDOS OFICIALES DEL BOT (setMyCommands) ----
 @app.get("/set_commands")
 def set_commands():
-    """
-    Define la lista oficial de comandos del bot (setMyCommands).
-    Esto es lo que Telegram enseña como botones con '/'.
-    """
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setMyCommands"
     commands = {
         "commands": [
@@ -184,7 +180,7 @@ def get_commands():
     r = requests.get(url, timeout=15)
     return (r.text, r.status_code, {"Content-Type": "application/json"})
 
-# ---- DEBUG opcional (puedes dejarlos o quitarlos) ----
+# ---- DEBUG opcional ----
 @app.get("/debug/ping")
 def debug_ping():
     chat_id = request.args.get("chat_id", type=int)
@@ -202,7 +198,7 @@ def debug_buttons():
 def telegram_webhook():
     data = request.get_json(silent=True) or {}
 
-    # a) callback_query (no usado ahora; reservado por si luego agregas inline buttons)
+    # a) callback_query (reservado por si usas inline buttons más adelante)
     if data.get("callback_query"):
         return jsonify({"ok": True})
 
@@ -216,12 +212,12 @@ def telegram_webhook():
     if not text or not chat_id:
         return jsonify({"ok": True})
 
-    # Normaliza a MAYÚSCULAS y quita '/' si viene como comando
-    t = text.upper()
+    # Normaliza y quita '/'
+    t = text.upper().strip()
     if t.startswith("/"):
         t = t[1:]
 
-    # ===== /start =====
+    # /start
     if t == "START":
         welcome = (
             "✨ *Bienvenido a PureMuse Bot*\n\n"
@@ -230,7 +226,7 @@ def telegram_webhook():
         tg_send_text(chat_id, welcome, parse_mode="Markdown", reply_markup=build_main_menu())
         return jsonify({"ok": True})
 
-    # ===== /about =====
+    # /about
     if t == "ABOUT":
         tg_send_text(
             chat_id,
@@ -241,7 +237,7 @@ def telegram_webhook():
         )
         return jsonify({"ok": True})
 
-    # ===== /galleries =====
+    # /galleries
     if t == "GALLERIES":
         tg_send_text(
             chat_id,
@@ -252,7 +248,7 @@ def telegram_webhook():
         )
         return jsonify({"ok": True})
 
-    # ===== /buyvip =====
+    # /buyvip
     if t in ("BUYVIP", "BUY VIP", "BUY_VIP"):
         try:
             link = mp_create_link(chat_id)
@@ -266,7 +262,7 @@ def telegram_webhook():
             tg_send_text(chat_id, "⚠️ No pude generar el link de pago. Intenta de nuevo en unos minutos.")
         return jsonify({"ok": True})
 
-    # ===== /vipstatus =====
+    # /vipstatus
     if t in ("VIPSTATUS", "VIP STATUS", "VIP_STATUS"):
         ensure_tables()
         with SessionLocal() as db:
@@ -296,4 +292,5 @@ def telegram_webhook():
     # Fallback: re-muestra menú
     tg_send_text(chat_id, "Usa el menú para navegar.", reply_markup=build_main_menu())
     return jsonify({"ok": True})
+
 
