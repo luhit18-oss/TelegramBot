@@ -308,14 +308,14 @@ def admin_delete_user():
     ensure_tables()
     try:
         with SessionLocal() as db:
-            # Intentamos borrar primero las entregas (si existen)
             del1 = db.query(VIPDelivery).filter(VIPDelivery.chat_id == chat_id).delete(synchronize_session=False)
             del2 = db.query(VIPUser).filter(VIPUser.chat_id == chat_id).delete(synchronize_session=False)
             db.commit()
         return jsonify(ok=True, deleted=del1 + del2), 200
     except Exception as e:
+        import traceback
+        traceback.print_exc()  # 👈 esto mostrará el error en los logs Render
         return jsonify(ok=False, error=str(e)), 500
-
 
 @app.get("/admin/clear_all")
 def admin_clear_all():
@@ -350,6 +350,7 @@ def admin_db_status():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
