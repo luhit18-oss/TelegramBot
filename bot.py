@@ -1,28 +1,27 @@
+# ============================================
+# PureMuse Bot — Bot de Telegram con menú + VIP
+# Flask + Gunicorn + SQLAlchemy + psycopg2 + Mercado Pago
+# ============================================
+
 import os
 from datetime import date
 from flask import Flask, request, jsonify
 import requests
 
-# =========================
-# ENV VARS (Render → Environment)
-# =========================
+# ============ SECCIÓN 1A: VARIABLES DE ENTORNO ============
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-BASE_URL = os.getenv("BASE_URL", "").rstrip("/")  # ej: https://puremusebot.onrender.com
+BASE_URL = os.getenv("BASE_URL", "").rstrip("/")  # p.ej. https://puremusebot.onrender.com
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "")
 MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET", "secret")
-DATABASE_URL = os.getenv("DATABASE_URL", "")  # postgresql+psycopg2://...&sslmode=require
+DATABASE_URL = os.getenv("DATABASE_URL", "")  # postgresql+psycopg2://.../neondb?sslmode=require
 
-# Telegram endpoints
 TG_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 TG_SET_WEBHOOK_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
 
-# Mercado Pago endpoints
 MP_PREFS_URL = "https://api.mercadopago.com/checkout/preferences"
 MP_PAY_URL = "https://api.mercadopago.com/v1/payments/"
 
-# =========================
-# DB (SQLAlchemy 2.x + psycopg2)
-# =========================
+# ============ SECCIÓN 1B: BASE DE DATOS (SQLAlchemy 2.x) ============
 from sqlalchemy import create_engine, BigInteger, Integer, String, Date, select, UniqueConstraint
 from sqlalchemy.orm import sessionmaker, DeclarativeBase, Mapped, mapped_column
 
@@ -41,23 +40,20 @@ class Base(DeclarativeBase):
 class VIPUser(Base):
     __tablename__ = "vip_users"
     __table_args__ = (UniqueConstraint("chat_id", name="uq_vip_chat_id"),)
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     username: Mapped[str | None] = mapped_column(String(150), nullable=True)
-    start_date: Mapped[date] = mapped_column(Date, nullable=False)           # fecha inicio VIP
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)           # inicio del ciclo VIP
     progress_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # 0..29
 
 def ensure_tables():
     Base.metadata.create_all(bind=engine)
 
-# =========================
-# Utilidades
-# =========================
+# ============ SECCIÓN 1C: UTILIDADES ============
 def read_galleries() -> list[str]:
     """
     Lee galleries.txt (una URL por línea).
-    Devuelve exactamente 30 elementos (rellena o recorta según sea necesario).
+    Devuelve exactamente 30 elementos (rellenando o recortando).
     """
     path = os.path.join(os.getcwd(), "galleries.txt")
     links = []
@@ -65,7 +61,7 @@ def read_galleries() -> list[str]:
         with open(path, "r", encoding="utf-8") as f:
             links = [ln.strip() for ln in f if ln.strip()]
     if not links:
-        # fallback seguro (reemplázalo por tus links reales)
+        # Fallback seguro (reemplázalo por tus links reales)
         links = [f"https://drive.google.com/your-gallery-link-{i+1}" for i in range(30)]
     # normalizar a 30
     if len(links) < 30:
@@ -92,7 +88,7 @@ def tg_send_text(chat_id: int, text: str, parse_mode: str | None = None, reply_m
 
 def build_main_menu() -> dict:
     """
-    Menú principal como ReplyKeyboard (cada botón "es un comando" visible).
+    Menú principal como ReplyKeyboard (cada botón es un comando visible).
     """
     keyboard = [
         [{"text": "ABOUT"}, {"text": "GALLERIES"}],
@@ -102,8 +98,8 @@ def build_main_menu() -> dict:
 
 def mp_create_link(chat_id: int) -> str:
     """
-    Crea link de pago de Mercado Pago por 50 MXN.
-    Guarda chat_id en external_reference para activar al aprobar.
+    Genera link de pago de Mercado Pago por $50 MXN.
+    Guarda chat_id en external_reference para activación en webhook.
     """
     headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}", "Content-Type": "application/json"}
     data = {
@@ -136,9 +132,7 @@ def send_gallery_today(chat_id: int, progress_day: int):
     msg = f"🎁 *PureMuse VIP – Día {day+1}/30*\n\nTu galería de hoy:\n{link}\n\n¡Disfrútala!"
     tg_send_text(chat_id, msg, parse_mode="Markdown")
 
-# =========================
-# Flask app
-# =========================
+# ============ SECCIÓN 1D: FLASK APP Y RUTAS ============
 app = Flask(__name__)
 
 @app.get("/")
@@ -169,10 +163,8 @@ def set_webhook():
 def telegram_webhook():
     data = request.get_json(silent=True) or {}
 
-    # a) Primero: procesar callback_query (por si luego quieres botones inline)
-    callback = data.get("callback_query")
-    if callback:
-        # En este bot, el menú es ReplyKeyboard; si luego agregas Inline, maneja aquí.
+    # a) Callback_query (si más adelante usas botones inline)
+    if data.get("callback_query"):
         return jsonify({"ok": True})
 
     # b) Mensajes / Comandos
@@ -180,10 +172,9 @@ def telegram_webhook():
     if not message:
         return jsonify({"ok": True})
 
-    chat = message.get("chat", {})
-    chat_id = chat.get("id")
+    chat_id = (message.get("chat") or {}).get("id")
     text = (message.get("text") or "").strip()
-    username = message.get("from", {}).get("username")
+    username = (message.get("from") or {}).get("username")
 
     if not text:
         return jsonify({"ok": True})
@@ -193,7 +184,7 @@ def telegram_webhook():
     if t.startswith("/"):
         t = t[1:]
 
-    # /start → bienvenida + menú
+    # ====== COMANDO: START (bienvenida + menú) ======
     if t in ("START",):
         welcome = (
             "✨ *Bienvenido a PureMuse Bot*\n\n"
@@ -202,25 +193,25 @@ def telegram_webhook():
         tg_send_text(chat_id, welcome, parse_mode="Markdown", reply_markup=build_main_menu())
         return jsonify({"ok": True})
 
-    # ABOUT
+    # ====== COMANDO: ABOUT ======
     if t in ("ABOUT",):
         tg_send_text(chat_id,
-            "👋 *ABOUT*\n\nPureMuse ofrece galerías artísticas exclusivas. "
+            "👋 *ABOUT*\n\nPureMuse ofrece galerías artísticas exclusivas.\n"
             "Con VIP recibes un enlace diario por 30 días.\n\nUsa *BUY VIP* para suscribirte.",
             parse_mode="Markdown",
             reply_markup=build_main_menu())
         return jsonify({"ok": True})
 
-    # GALLERIES
+    # ====== COMANDO: GALLERIES ======
     if t in ("GALLERIES",):
         tg_send_text(chat_id,
-            "🖼️ *GALLERIES*\n\nLas galerías VIP se envían *1 por día* durante *30 días*. "
-            "Los enlaces están hospedados en Google Drive.\n\nCompra con *BUY VIP*.",
+            "🖼️ *GALLERIES*\n\nLas galerías VIP se envían *1 por día* durante *30 días*.\n"
+            "Los enlaces se hospedan en Google Drive.\n\nCompra con *BUY VIP*.",
             parse_mode="Markdown",
             reply_markup=build_main_menu())
         return jsonify({"ok": True})
 
-    # BUY VIP – genera link de pago por 50 MXN
+    # ====== COMANDO: BUY VIP (link MP $50 MXN) ======
     if t in ("BUY VIP","BUY_VIP","BUYVIP"):
         try:
             link = mp_create_link(chat_id)
@@ -231,10 +222,10 @@ def telegram_webhook():
             )
             tg_send_text(chat_id, msg, parse_mode="Markdown", reply_markup=build_main_menu())
         except Exception as e:
-            tg_send_text(chat_id, f"⚠️ No pude generar el link de pago. Intenta de nuevo en unos minutos.\n\n{e}")
+            tg_send_text(chat_id, "⚠️ No pude generar el link de pago. Intenta de nuevo en unos minutos.")
         return jsonify({"ok": True})
 
-    # VIP STATUS – muestra estado/días restantes
+    # ====== COMANDO: VIP STATUS ======
     if t in ("VIP STATUS","VIP_STATUS","VIPSTATUS"):
         ensure_tables()
         with SessionLocal() as db:
@@ -310,7 +301,8 @@ def mp_webhook():
 def cron_daily():
     """
     Llamar 1 vez al día (Render → Jobs).
-    Envía la galería del día a todos los VIP activos y avanza progress_day.
+    Envía 1 galería y avanza progress_day a todos los VIP activos.
+    Tras 30 días (progress_day llega a 30), ya no avanza más y el usuario debe comprar de nuevo.
     """
     ensure_tables()
     sent = 0
@@ -321,7 +313,7 @@ def cron_daily():
             if is_active_vip(u.start_date, today):
                 # Enviar galería del día actual
                 send_gallery_today(u.chat_id, u.progress_day)
-                # Avanzar (máx 29)
+                # Avanzar (máx 29 → día 30)
                 u.progress_day = min(29, (u.progress_day or 0) + 1)
                 db.commit()
                 sent += 1
