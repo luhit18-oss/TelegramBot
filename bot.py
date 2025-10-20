@@ -68,15 +68,17 @@ class VIPDelivery(Base):
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
-def ensure_schema_safe():
-    """Garantiza que las tablas existan, incluso si Neon tarda o falla."""
-    try:
-        Base.metadata.create_all(bind=engine)
-        return True
-    except Exception as e:
-        print("⚠️ ensure_schema_safe error:", e)
-        notify_owner(f"⚠️ DB schema check failed:\n<pre>{esc(str(e))}</pre>")
-        return False
+class VIPPayment(Base):
+    __tablename__ = "vip_payments"
+    __table_args__ = (UniqueConstraint("mp_payment_id", name="uq_payment_mp_id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    mp_payment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    amount_mxn: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="MXN")
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
 
 # ========= UTILS =========
 def esc(s: str) -> str:
@@ -210,6 +212,69 @@ def health():
 def testdb():
     ensure_schema_safe()
     return "✅ DB ready", 200
+@app.post("/mp/webhook")
+def mp_webhook():
+    if request.args.get("secret") != CRON_TOKEN:
+        return "forbidden", 403
+
+    d = request.get_json(silent=True) or {}
+    pid = d.get("data", {}).get("id") or d.get("id")
+    if not pid:
+        return "missing id", 400
+
+    p = mp_fetch_payment(pid)
+    if not p:
+        return "not found", 404
+
+    status = p.get("status")
+    amount = p.get("transaction_amount")
+    currency = p.get("currency_id")
+    chat_id = int(p.get("external_reference") or 0)
+
+    if status == "approved" and amount == 50 and currency == "MXN" and chat_id:
+        ensure_schema_safe()
+        with SessionLocal() as db:
+            now = now_mx()
+            u = db.execute(select(VIPUser).where(VIPUser.chat_id == chat_id)).scalar_one_or_none()
+            if u:
+                u.start_date = now.date()
+                u.active_until = (now + timedelta(days=30)).replace(tzinfo=None)
+                u.last_sent_at = None
+            else:
+                db.add(VIPUser(
+                    chat_id=chat_id,
+                    username=None,
+                    start_date=now.date(),
+                    active_until=(now + timedelta(days=30)).replace(tzinfo=None),
+                    last_sent_at=None
+                ))
+            db.commit()
+
+        tg_send(chat_id, "💋 <b>Payment approved!</b>\n\nYour VIP is now active for <b>30 days</b> ✨")
+        notify_owner(f"💳 New VIP payment from user <b>{chat_id}</b> ✅")
+
+        # 📦 Registrar el pago para métricas
+        try:
+            ensure_schema_safe()
+            with SessionLocal() as db:
+                existing = db.execute(
+                    select(VIPPayment).where(VIPPayment.mp_payment_id == str(pid))
+                ).scalar_one_or_none()
+                if not existing:
+                    db.add(VIPPayment(
+                        chat_id=chat_id,
+                        mp_payment_id=str(pid),
+                        amount_mxn=int(amount or 0),
+                        currency=currency or "MXN",
+                        status=status,
+                        approved_at=now_mx().replace(tzinfo=None),
+                    ))
+                    db.commit()
+        except Exception as e:
+            notify_owner(f"⚠️ Could not record payment {pid}: <pre>{esc(str(e))}</pre>")
+
+    return "ok", 200
+
 
 # ========= Telegram Webhook =========
 @app.post("/telegram")
@@ -350,9 +415,94 @@ def admin_db_status():
         import traceback; traceback.print_exc()
         return jsonify(ok=False, error=str(e)), 500
 
+@app.get("/admin/metrics/overview")
+def metrics_overview():
+    if request.args.get("secret") != CRON_TOKEN:
+        return "forbidden", 403
+    ensure_schema_safe()
+    try:
+        today = day_mx()
+        last_30 = today - timedelta(days=30)
+
+        with SessionLocal() as db:
+            all_users = list(db.execute(select(VIPUser)).scalars())
+            users_total = len(all_users)
+            users_active = sum(1 for u in all_users if is_active(u))
+            users_expired = users_total - users_active
+
+            deliveries_total = db.execute(select(func.count(VIPDelivery.id))).scalar_one() or 0
+            deliveries_today = db.execute(
+                select(func.count(VIPDelivery.id)).where(func.date(VIPDelivery.sent_at) == today)
+            ).scalar_one() or 0
+            last_delivery_at = db.execute(select(func.max(VIPDelivery.sent_at))).scalar_one_or_none()
+
+            payments_total_count = db.execute(select(func.count(VIPPayment.id))).scalar_one() or 0
+            revenue_mxn_total = db.execute(select(func.coalesce(func.sum(VIPPayment.amount_mxn), 0))).scalar_one() or 0
+            revenue_mxn_30d = db.execute(
+                select(func.coalesce(func.sum(VIPPayment.amount_mxn), 0)).where(
+                    func.date(VIPPayment.approved_at) >= last_30
+                )
+            ).scalar_one() or 0
+
+            new_vip_today = db.execute(
+                select(func.count(VIPPayment.id)).where(func.date(VIPPayment.approved_at) == today)
+            ).scalar_one() or 0
+            expiring_today = sum(1 for u in all_users if u.active_until and u.active_until.date() == today)
+
+        return jsonify(
+            ok=True,
+            users_total=users_total,
+            users_active=users_active,
+            users_expired=users_expired,
+            deliveries_total=deliveries_total,
+            deliveries_today=deliveries_today,
+            last_delivery_at=str(last_delivery_at),
+            payments_total_count=payments_total_count,
+            revenue_mxn_total=revenue_mxn_total,
+            revenue_mxn_30d=revenue_mxn_30d,
+            new_vip_today=new_vip_today,
+            expiring_today=expiring_today,
+        ), 200
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify(ok=False, error=str(e)), 500
+
+@app.get("/admin/metrics/revenue_by_day")
+def metrics_revenue_by_day():
+    if request.args.get("secret") != CRON_TOKEN:
+        return "forbidden", 403
+    ensure_schema_safe()
+    try:
+        today = day_mx()
+        start = today - timedelta(days=13)
+
+        rows = []
+        with SessionLocal() as db:
+            q = db.execute(
+                select(
+                    func.date(VIPPayment.approved_at).label("d"),
+                    func.coalesce(func.sum(VIPPayment.amount_mxn), 0).label("sum_mxn")
+                ).where(
+                    func.date(VIPPayment.approved_at) >= start
+                ).group_by(
+                    func.date(VIPPayment.approved_at)
+                ).order_by("d")
+            ).all()
+
+            map_by_day = {str(r.d): int(r.sum_mxn) for r in q if r.d}
+            cur = start
+            while cur <= today:
+                rows.append({"date": str(cur), "revenue_mxn": map_by_day.get(str(cur), 0)})
+                cur += timedelta(days=1)
+
+        return jsonify(ok=True, days=rows), 200
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify(ok=False, error=str(e)), 500
 
 # ========= MAIN =========
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
+
 
