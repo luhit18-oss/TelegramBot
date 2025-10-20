@@ -154,6 +154,16 @@ def notify_owner(text: str):
     except Exception as e:
         print("⚠️ Owner notify error:", e)
 
+def ensure_schema_safe():
+    """Garantiza que las tablas existan, incluso si Neon tarda o falla."""
+    try:
+        Base.metadata.create_all(bind=engine)
+        return True
+    except Exception as e:
+        print("⚠️ ensure_schema_safe error:", e)
+        notify_owner(f"⚠️ DB schema check failed:\n<pre>{esc(str(e))}</pre>")
+        return False
+
 # ========= Mercado Pago =========
 def mp_create_link(chat_id: int) -> str:
     if not MP_ACCESS_TOKEN or not BASE_URL:
@@ -504,5 +514,6 @@ def metrics_revenue_by_day():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
+
 
 
